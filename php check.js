@@ -115,17 +115,17 @@ function checkPhpSite(url) {
       // 修改內容：把 /index.php 與 404 頁的探測結果一併寫入 details
       // ----------------------------
       if (idx.getResponseCode() === 200 && fake.getResponseCode() === 404) {
-        res.score += 2;
+        res.score = Math.max(res.score, 2);
         res.evidence.push("/index.php 存在 (200)，假 .php 回 404");
         res.details.push({ kind: "evidence", label: "/index.php 存在 (200)，假 .php 回 404",
           raw: base + "/index.php → HTTP 200\n" + base + "/zz-not-exist-….php → HTTP 404",
-          explain: "網站上真的有 index.php 這個 PHP 檔，而隨便亂打的 .php 網址會回「找不到」，表示伺服器確實在處理 PHP 檔案（不是什麼網址都回同一頁）。",
+          explain: "網站對 /index.php 回 HTTP 200，對不存在的 .php 網址回 HTTP 404。這是可能使用 PHP 的線索。HTTP 狀態無法確認 PHP 程式是否執行。",
           advice: "" });
       }
       // 很多站首頁有藏 header，但錯誤頁沒藏
       const fakeAnalyzed = analyzeResponse_(fake.getAllHeaders(), "");
       if (fakeAnalyzed.score > 0) {
-        res.score += fakeAnalyzed.score;
+        res.score = Math.max(res.score, fakeAnalyzed.score);
         fakeAnalyzed.evidence.forEach(e => res.evidence.push("404 頁 " + e));
         fakeAnalyzed.details.forEach(d => {
           d.label = "404 頁 " + d.label;
@@ -150,11 +150,11 @@ function checkPhpSite(url) {
 // 修改原因：要產生可以分享給網站管理者的中文報告，需要每個依據的原始內容與說明
 // 修改內容：除了 evidence 標籤外，另外回傳 details（看到的原始內容、中文說明、建議），
 //           並加入不計分的觀察項目（session cookie 安全屬性、Server 版本外洩）；
-//           evidence / score 的判斷邏輯不變，Sheet 輸出維持原樣
+//           Sheet 輸出維持原樣
 // ----------------------------
 /**
  * 分析 header 與 HTML，回傳分數與依據（不需網路，方便測試）
- * score >= 3 視為確定，1~2 視為可能
+ * score 取單一特徵的最高分；>= 3 表示明確指紋，1~2 視為可能
  * details: [{kind: "evidence"|"note", label, raw, explain, advice}]
  * pageUrl: 目前檢查的網址，用來判斷 .php 連結是不是本站（可省略）
  */
@@ -170,7 +170,7 @@ function analyzeResponse_(headers, html, pageUrl) {
   let version = "";
 
   const add = (s, label, raw, explain, advice) => {
-    score += s;
+    score = Math.max(score, s);
     evidence.push(label);
     details.push({ kind: "evidence", label: label, raw: raw, explain: explain, advice: advice || "" });
   };
@@ -180,35 +180,37 @@ function analyzeResponse_(headers, html, pageUrl) {
 
   const powered = h["x-powered-by"] || "";
   const server = h["server"] || "";
-  const m = (powered + " " + server).match(/PHP\/(\d+\.\d+(?:\.\d+)?)/i);
+  const versionPattern = /(?:^|[\s,;])PHP\/(\d+\.\d+(?:\.\d+)?)(?=$|[\s,;])/i;
+  const poweredVersion = powered.match(versionPattern);
+  const m = poweredVersion || server.match(versionPattern);
   if (m) {
     version = m[1];
     add(3, "Header 回報 PHP/" + version,
-      (powered ? "X-Powered-By: " + powered : "Server: " + server),
+      (poweredVersion ? "X-Powered-By: " + powered : "Server: " + server),
       "伺服器在每個回應裡主動告訴訪客「我用的是 PHP " + version + "」。這讓任何人（包括自動化掃描程式）都能直接查到這個版本已知的漏洞。",
       "在 php.ini 設定 expose_php = Off，並重新啟動網頁伺服器，就不會再送出 PHP 版本號。");
-  } else if (/php/i.test(powered)) {
+  } else if (/(?:^|[\s,;])PHP(?=$|[\s,;\/])/i.test(powered)) {
     add(3, "X-Powered-By: " + powered, "X-Powered-By: " + powered,
       "伺服器回應裡的 X-Powered-By 標頭寫明使用 PHP。",
       "在 php.ini 設定 expose_php = Off，移除 X-Powered-By 標頭。");
   }
 
-  const cookies = (h["set-cookie"] || "").split("\n").filter(Boolean);
+  const cookies = (h["set-cookie"] || "").split("\n").map(c => c.trim()).filter(Boolean);
   const findCookie = re => cookies.filter(c => re.test(c))[0] || "";
   [
-    [/PHPSESSID=/i, "Cookie PHPSESSID", 3, "PHPSESSID 是 PHP 內建 session（登入狀態、購物車等）功能的預設 cookie 名稱，幾乎只有 PHP 程式會發出。",
+    [/^PHPSESSID=/i, "Cookie PHPSESSID", 3, "PHPSESSID 是 PHP 內建 session（登入狀態、購物車等）功能的預設 cookie 名稱，幾乎只有 PHP 程式會發出。",
       "可在 php.ini 用 session.name 改成自訂名稱，減少外界一眼看出使用 PHP。"],
-    [/laravel_session=/i, "Cookie laravel_session (Laravel)", 3, "laravel_session 是 PHP 框架 Laravel 的預設 session cookie。", "確認 Laravel 與套件有持續更新。"],
-    [/ci_session=/i, "Cookie ci_session (CodeIgniter)", 3, "ci_session 是 PHP 框架 CodeIgniter 的預設 session cookie。", "確認 CodeIgniter 版本仍有官方支援（CodeIgniter 3 已停止維護）。"],
-    [/wordpress_|wp-settings-/i, "Cookie WordPress", 3, "WordPress（以 PHP 撰寫）會發出 wordpress_ / wp-settings- 開頭的 cookie。", "確認 WordPress 核心、佈景主題與外掛都是最新版。"],
-    [/SESS[0-9a-f]{32}=/i, "Cookie Drupal", 2, "SESS 加 32 位十六進位的 cookie 名稱是 Drupal（以 PHP 撰寫）的 session 格式。", "確認 Drupal 核心與模組有套用安全性更新。"],
+    [/^laravel_session=/i, "Cookie laravel_session (Laravel)", 3, "laravel_session 是 PHP 框架 Laravel 的預設 session cookie。", "確認 Laravel 與套件有持續更新。"],
+    [/^ci_session=/i, "Cookie ci_session (CodeIgniter)", 3, "ci_session 是 PHP 框架 CodeIgniter 的預設 session cookie。", "確認 CodeIgniter 版本仍有官方支援（CodeIgniter 3 已停止維護）。"],
+    [/^(?:wordpress_|wp-settings-)[^=;\s]*=/i, "Cookie WordPress", 3, "WordPress（以 PHP 撰寫）會發出 wordpress_ / wp-settings- 開頭的 cookie。", "確認 WordPress 核心、佈景主題與外掛都是最新版。"],
+    [/^S?SESS[0-9a-f]{32}=/i, "Cookie Drupal", 2, "SESS 或 SSESS 加 32 位十六進位的 cookie 名稱是 Drupal（以 PHP 撰寫）的 session 格式。", "確認 Drupal 核心與模組有套用安全性更新。"],
   ].forEach(([re, label, s, explain, advice]) => {
     const c = findCookie(re);
     if (c) add(s, label, "Set-Cookie: " + maskCookie_(c), explain, advice);
   });
 
   // session cookie 的安全屬性（不計分，只是提醒）
-  const sess = findCookie(/PHPSESSID=|laravel_session=|ci_session=|SESS[0-9a-f]{32}=/i);
+  const sess = findCookie(/^(?:PHPSESSID=|laravel_session=|ci_session=|S?SESS[0-9a-f]{32}=)/i);
   if (sess) {
     const missing = [];
     if (!/;\s*secure/i.test(sess)) missing.push("Secure（只透過 HTTPS 傳送）");
@@ -231,16 +233,16 @@ function analyzeResponse_(headers, html, pageUrl) {
   }
 
   if (html) {
-    const wp = html.match(/[^"'\s]*\/wp-(content|includes)\/[^"'\s]*/i);
+    const wp = html.match(/\/wp-(content|includes)\/[^"'\s]*/i);
     if (wp) {
-      add(3, "HTML 含 wp-content (WordPress)", wp[0].slice(0, 200),
-        "網頁原始碼載入 /wp-content/ 或 /wp-includes/ 底下的檔案，這是 WordPress 固定的資料夾結構。",
+      add(2, "HTML 含 wp-content (WordPress)", wp[0].slice(0, 200),
+        "網頁引用 WordPress 的 /wp-content/ 或 /wp-includes/ 檔案。靜態網頁也可能引用這些檔案。此特徵無法確認網站目前使用 PHP。",
         "確認 WordPress 核心、佈景主題與外掛都是最新版。");
     }
     const gen = html.match(/<meta[^>]+generator[^>]+(WordPress|Joomla|Drupal|MediaWiki|phpBB|Magento|PrestaShop|OpenCart)[^>]*>/i);
     if (gen) {
-      add(3, "Generator: " + gen[1], gen[0].slice(0, 200),
-        "網頁的 <meta name=\"generator\"> 標示由 " + gen[1] + " 產生，這套系統是用 PHP 撰寫的。若有附版本號，外界也能直接看出版本。",
+      add(2, "Generator: " + gen[1], gen[0].slice(0, 200),
+        "網頁的 generator 標籤顯示網頁由 " + gen[1] + " 產生。這套系統使用 PHP。靜態網頁也可能保留此標籤。此特徵無法確認網站目前使用 PHP。若標籤含有版本號，外界也能看到該版本。",
         "可在 " + gen[1] + " 的設定或佈景主題中移除 generator 標籤，並保持系統更新。");
     }
     // --- [Modified 2026-10-23] ---
@@ -255,7 +257,7 @@ function analyzeResponse_(headers, html, pageUrl) {
     }
     if (links.length) {
       add(2, "HTML 連結到 .php 頁面", links.join("\n"),
-        "首頁裡連到本站的連結指向副檔名為 .php 的網頁，代表這些頁面是由 PHP 程式產生。",
+        "本站連結含有 .php 副檔名。靜態網頁也可以使用這個副檔名。此特徵無法確認 PHP 程式是否執行。",
         "");
     }
   }
