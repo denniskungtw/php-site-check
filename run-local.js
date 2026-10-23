@@ -54,9 +54,11 @@ function versionExplain(r) {
       ? "網站沒有對外公開 PHP 版本號（這是好的做法），因此無法從外部判斷版本是否過舊。\n請管理者自行確認目前的 PHP 版本（主機商控制台，或在伺服器上執行 php -v），並對照 https://www.php.net/supported-versions.php 確認仍在支援期內。"
       : "";
   }
-  if (/已 EOL/.test(r.versionStatus)) return "PHP " + r.version + " 已經停止官方支援（EOL），之後發現的安全漏洞都不會再修補，建議盡快升級到 8.3 以上。";
-  if (/即將 EOL/.test(r.versionStatus)) return "PHP " + r.version + " 的安全性更新只到 2026-12-31，建議近期規劃升級到 8.3 以上。";
-  return "PHP " + r.version + " 目前仍在官方支援期內。";
+  const rec = phpRecommendedVersion_();
+  const eol = phpEolDate_(r.version);
+  if (/已 EOL/.test(r.versionStatus)) return "PHP " + r.version + " 已經停止官方支援（EOL），之後發現的安全漏洞都不會再修補，建議盡快升級到 " + rec + " 以上。";
+  if (/即將 EOL/.test(r.versionStatus)) return "PHP " + r.version + " 的安全性更新只到 " + formatDate_(eol) + "，建議近期規劃升級到 " + rec + " 以上。";
+  return "PHP " + r.version + " 目前仍在官方支援期內" + (eol ? "（安全性更新到 " + formatDate_(eol) + "）" : "") + "。";
 }
 
 function buildReport(url, r) {
@@ -111,7 +113,7 @@ function buildReport(url, r) {
 
   const advice = [];
   (r.details || []).forEach(d => { if (d.advice && advice.indexOf(d.advice) < 0) advice.push(d.advice); });
-  if (/已 EOL|即將 EOL/.test(r.versionStatus)) advice.unshift("升級 PHP 到仍受官方支援的版本（建議 8.3 以上）。");
+  if (/已 EOL|即將 EOL/.test(r.versionStatus)) advice.unshift("升級 PHP 到仍受官方支援的版本（建議 " + phpRecommendedVersion_() + " 以上）。");
   if (advice.length) {
     L.push("");
     L.push("【建議】");

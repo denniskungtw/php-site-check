@@ -15,10 +15,23 @@
 const SHEET_NAME = "Sites";
 const HEADERS = ["網址", "結果", "PHP 版本", "版本狀態", "判斷依據", "HTTP 狀態", "Server", "檢查時間"];
 
-// PHP 版本支援狀態（依 php.net/supported-versions，2026-10 更新）
-// 8.1 以前已 EOL；8.2 安全性支援到 2026-12-31
-const PHP_EOL_BEFORE = "8.2";
-const PHP_EOL_SOON = ["8.2"];
+// --- [Modified 2026-10-23] ---
+// 修改原因：原本用固定的版本號判斷 EOL，過了 EOL 日期後結果會過時
+// 修改內容：改成各版本的停止支援日期，依今天日期計算狀態；PHP 新版發布時補一行即可
+// ----------------------------
+// PHP 各版本停止安全性支援的日期（依 php.net/supported-versions，2026-10 更新）
+// 比表中最舊版本更舊的版本一律視為已 EOL；比表中最新版本更新的版本視為支援中
+const PHP_EOL_DATES = {
+  "7.4": "2022-11-28",
+  "8.0": "2023-11-26",
+  "8.1": "2025-12-31",
+  "8.2": "2026-12-31",
+  "8.3": "2027-12-31",
+  "8.4": "2028-12-31",
+  "8.5": "2029-12-31",
+};
+// 距離 EOL 不到這個天數就標示「即將 EOL」
+const PHP_EOL_SOON_DAYS = 180;
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -85,7 +98,11 @@ function checkPhpSite(url) {
     return { result: "連線失敗", version: "", versionStatus: "", evidence: [String(e.message || e)], details: [], status: "", server: "" };
   }
 
-  const res = analyzeResponse_(main.getAllHeaders(), main.getContentText().slice(0, 200000));
+  // --- [Modified 2026-10-23] ---
+  // 修改原因：判斷 .php 連結是否為同網站需要知道目前網址
+  // 修改內容：多傳入 url
+  // ----------------------------
+  const res = analyzeResponse_(main.getAllHeaders(), main.getContentText().slice(0, 200000), url);
 
   // 補強：比較 /index.php 與一個不存在的 .php，避免「什麼網址都回 200」的誤判
   if (res.score < 3) {
@@ -139,8 +156,9 @@ function checkPhpSite(url) {
  * 分析 header 與 HTML，回傳分數與依據（不需網路，方便測試）
  * score >= 3 視為確定，1~2 視為可能
  * details: [{kind: "evidence"|"note", label, raw, explain, advice}]
+ * pageUrl: 目前檢查的網址，用來判斷 .php 連結是不是本站（可省略）
  */
-function analyzeResponse_(headers, html) {
+function analyzeResponse_(headers, html, pageUrl) {
   const h = {};
   Object.keys(headers || {}).forEach(k => {
     const v = headers[k];
@@ -225,13 +243,19 @@ function analyzeResponse_(headers, html) {
         "網頁的 <meta name=\"generator\"> 標示由 " + gen[1] + " 產生，這套系統是用 PHP 撰寫的。若有附版本號，外界也能直接看出版本。",
         "可在 " + gen[1] + " 的設定或佈景主題中移除 generator 標籤，並保持系統更新。");
     }
+    // --- [Modified 2026-10-23] ---
+    // 修改原因：首頁連到其他網站（政府、合作單位）的 .php 頁面也會被計分，造成誤判
+    // 修改內容：只計算相對路徑或同網站（含 www. 與子網域）的 .php 連結
+    // ----------------------------
     const links = [];
     const re = /href=["']([^"']+\.php(?:\?[^"']*)?)["']/gi;
     let mm;
-    while ((mm = re.exec(html)) && links.length < 3) if (links.indexOf(mm[1]) < 0) links.push(mm[1]);
+    while ((mm = re.exec(html)) && links.length < 3) {
+      if (links.indexOf(mm[1]) < 0 && isSameSite_(mm[1], pageUrl)) links.push(mm[1]);
+    }
     if (links.length) {
       add(2, "HTML 連結到 .php 頁面", links.join("\n"),
-        "首頁裡的連結指向副檔名為 .php 的網頁，代表這些頁面是由 PHP 程式產生。",
+        "首頁裡連到本站的連結指向副檔名為 .php 的網頁，代表這些頁面是由 PHP 程式產生。",
         "");
     }
   }
@@ -255,12 +279,66 @@ function maskCookie_(cookie) {
     name + (val.length > 4 ? val.slice(0, 4) + "…（已遮蔽）" : val));
 }
 
-function phpVersionStatus_(version) {
+// --- [Modified 2026-10-23] ---
+// 修改原因：過濾外部網站的 .php 連結
+// 修改內容：新增函式；相對路徑視為同網站，絕對網址比對主機名稱（去掉 www.，子網域也算同網站）
+// ----------------------------
+function isSameSite_(href, pageUrl) {
+  const hm = href.match(/^(?:https?:)?\/\/([^\/?#:]+)/i);
+  if (!hm) return true;
+  const pm = String(pageUrl || "").match(/^(?:https?:)?\/\/([^\/?#:]+)/i);
+  if (!pm) return true;
+  const a = hm[1].toLowerCase().replace(/^www\./, ""), b = pm[1].toLowerCase().replace(/^www\./, "");
+  return a === b || a.endsWith("." + b) || b.endsWith("." + a);
+}
+
+// --- [Modified 2026-10-23] ---
+// 修改原因：EOL 改以日期判斷
+// 修改內容：依 PHP_EOL_DATES 與今天日期回傳狀態；即將 EOL 時附上停止支援日期
+// ----------------------------
+function phpVersionStatus_(version, today) {
   if (!version) return "";
-  const mm = version.split(".").slice(0, 2).join(".");
-  if (compareVer_(mm, PHP_EOL_BEFORE) < 0) return "已 EOL，請盡快升級";
-  if (PHP_EOL_SOON.indexOf(mm) >= 0) return "即將 EOL";
+  const eol = phpEolDate_(version);
+  if (!eol) return "支援中";
+  const days = (eol - (today || new Date())) / 86400000;
+  if (days < 0) return "已 EOL，請盡快升級";
+  if (days < PHP_EOL_SOON_DAYS) return "即將 EOL，" + formatDate_(eol) + " 停止支援";
   return "支援中";
+}
+
+// --- [Modified 2026-10-23] ---
+// 修改原因：EOL 改以日期判斷
+// 修改內容：新增函式，回傳該版本停止支援的時間（台灣時間當天結束）；
+//           比表中最舊版本更舊回傳 1970-01-01（已 EOL），比最新版本更新回傳 null（支援中）
+// ----------------------------
+function phpEolDate_(version) {
+  const mm = String(version).split(".").slice(0, 2).join(".");
+  const keys = Object.keys(PHP_EOL_DATES).sort(compareVer_);
+  if (PHP_EOL_DATES[mm]) return new Date(PHP_EOL_DATES[mm] + "T23:59:59+08:00");
+  if (compareVer_(mm, keys[0]) < 0) return new Date(0);
+  return null;
+}
+
+// --- [Modified 2026-10-23] ---
+// 修改原因：原本建議升級的版本「8.3 以上」是寫死的
+// 修改內容：新增函式，回傳最舊的「不是已 EOL 也不是即將 EOL」的版本
+// ----------------------------
+function phpRecommendedVersion_(today) {
+  const now = today || new Date();
+  const keys = Object.keys(PHP_EOL_DATES).sort(compareVer_);
+  for (let i = 0; i < keys.length; i++) {
+    if ((phpEolDate_(keys[i]) - now) / 86400000 >= PHP_EOL_SOON_DAYS) return keys[i];
+  }
+  return keys[keys.length - 1];
+}
+
+// --- [Modified 2026-10-23] ---
+// 修改原因：報告與狀態要顯示 EOL 日期
+// 修改內容：新增函式，以台灣時間輸出 YYYY-MM-DD（不用 Utilities，Apps Script 與 Node 都可用）
+// ----------------------------
+function formatDate_(d) {
+  const t = new Date(d.getTime() + 8 * 3600000);
+  return t.getUTCFullYear() + "-" + String(t.getUTCMonth() + 1).padStart(2, "0") + "-" + String(t.getUTCDate()).padStart(2, "0");
 }
 
 function compareVer_(a, b) {
