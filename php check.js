@@ -109,6 +109,35 @@ function checkPhpSite(url) {
     try {
       const base = url.replace(/^(https?:\/\/[^\/?#]+).*$/i, "$1");
       const idx = UrlFetchApp.fetch(base + "/index.php", opt);
+  
+      // --- [Modified 2026-10-23] ---
+    // 補查頁面也完整分析，先保留證據，避免後續假網址逾時造成遺失。
+    const idxAnalyzed = analyzeResponse_(
+      idx.getAllHeaders(),
+      idx.getContentText().slice(0, 200000),
+      base + "/index.php"
+    );
+
+    // 採較高分，避免首頁與補查頁面重複加分。
+    res.score = Math.max(res.score, idxAnalyzed.score);
+    
+      idxAnalyzed.evidence.forEach(e => {
+        if (res.evidence.indexOf(e) < 0) res.evidence.push(e);
+      });
+    
+      idxAnalyzed.details.forEach(d => {
+        if (!res.details.some(existing =>
+          existing.label === d.label && existing.raw === d.raw
+        )) {
+          res.details.push(Object.assign({}, d, {
+            raw: "來源：" + base + "/index.php\n" + d.raw
+          }));
+        }
+      });
+    
+      if (!res.version) res.version = idxAnalyzed.version; 
+
+      
       const fake = UrlFetchApp.fetch(base + "/zz-not-exist-" + Date.now() + ".php", opt);
       // --- [Modified 2026-10-23] ---
       // 修改原因：報告需要補強探測的原始結果與說明
