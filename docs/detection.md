@@ -11,7 +11,7 @@ PHP Site Check 屬於**被動式指紋辨識**：只讀取網站在正常瀏覽�
         │
         ▼
 2. 分析回應的 HTTP header、Set-Cookie、HTML 原始碼（前 200 KB）
-   每找到一個特徵就加分
+   保留每個特徵的依據，以單一特徵的最高分判斷
         │
         ▼
 3. 分數 < 3（還不確定）時，進行補強探測：
@@ -19,17 +19,21 @@ PHP Site Check 屬於**被動式指紋辨識**：只讀取網站在正常瀏覽�
    └─ 開啟一個不存在的 .php 網址（例如 /zz-not-exist-1729650000000.php）
         │
         ▼
-4. 依總分給出結果，並判斷 PHP 版本狀態
+4. 依最高分給出結果，並判斷 PHP 版本狀態
 ```
 
 ## 計分規則
+
+各項特徵與各次回應都取**單一特徵的最高分**。報告保留所有判斷依據。弱線索最高為 2 分。多個弱線索不會累加成「是 PHP」。同一線索在不同回應重複出現，也不會增加分數。
+
+「是 PHP」表示回應含有明確的 PHP 特徵。代理伺服器或其他系統也可能設定這些標頭與 Cookie。請管理者確認實際執行環境。
 
 ### HTTP Header
 
 | 特徵 | 分數 | 說明 |
 |---|---|---|
 | `X-Powered-By` 或 `Server` 含 `PHP/x.y.z` | 3 | 直接公開 PHP 版本號，同時取得版本 |
-| `X-Powered-By` 含 `PHP`（無版本） | 3 | 公開使用 PHP |
+| `X-Powered-By` 回報 `PHP` 產品名稱（無版本） | 3 | 標頭宣告使用 PHP；不把 `NotPHP` 等名稱當成 PHP |
 | `X-Drupal-Cache` / `X-Drupal-Dynamic-Cache` | 3 | Drupal（PHP 撰寫）的快取標頭 |
 | `Link` 含 `wp-json` | 3 | WordPress REST API |
 
@@ -41,26 +45,26 @@ PHP Site Check 屬於**被動式指紋辨識**：只讀取網站在正常瀏覽�
 | `laravel_session=` | 3 | Laravel 框架 |
 | `ci_session=` | 3 | CodeIgniter 框架 |
 | `wordpress_` / `wp-settings-` | 3 | WordPress |
-| `SESS` + 32 位十六進位 | 2 | Drupal |
+| `SESS` 或 `SSESS` + 32 位十六進位 | 2 | Drupal |
 
 ### HTML 原始碼
 
 | 特徵 | 分數 | 說明 |
 |---|---|---|
-| 含 `/wp-content/` 或 `/wp-includes/` | 3 | WordPress 固定資料夾結構 |
-| `<meta name="generator">` 為 WordPress、Joomla、Drupal、MediaWiki、phpBB、Magento、PrestaShop、OpenCart | 3 | 這些系統都是 PHP 撰寫 |
+| 含 `/wp-content/` 或 `/wp-includes/` | 2 | WordPress 資料夾結構，靜態匯出或引用其他網站資源也可能保留 |
+| `<meta name="generator">` 為 WordPress、Joomla、Drupal、MediaWiki、phpBB、Magento、PrestaShop、OpenCart | 2 | 這些系統以 PHP 撰寫，但靜態匯出也可能保留標籤 |
 | 連結指向本站的 `.php` 頁面 | 2 | 只計相對路徑或同網站的連結（`www.` 與子網域視為同網站），連到政府、合作單位等外部網站的 `.php` 不計分。報告中會列出最多 3 個實際連結 |
 
 ### 補強探測（只在分數 < 3 時進行）
 
 | 特徵 | 分數 | 說明 |
 |---|---|---|
-| `/index.php` 回 200，且不存在的 `.php` 回 404 | 2 | 證明伺服器真的在處理 PHP 檔，而不是任何網址都回同一頁 |
+| `/index.php` 回 200，且不存在的 `.php` 回 404 | 2 | PHP 網址的可能線索；HTTP 狀態不足以確認 PHP 程式有執行 |
 | 404 錯誤頁的 header 出現上述特徵 | 依上表 | 很多網站首頁有隱藏 header，但錯誤頁忘了隱藏 |
 
 ## 結果判定
 
-| 總分 | 結果 |
+| 最高分 | 結果 |
 |---|---|
 | 3 分以上 | 是 PHP |
 | 1 ~ 2 分 | 可能是 PHP |
